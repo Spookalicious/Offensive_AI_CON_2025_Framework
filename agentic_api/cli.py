@@ -6,6 +6,8 @@ from typing import Optional
 
 from .policy import Policy, PolicyToken, PolicyParser, KeyManager
 from .safety import ScopeEngine, RateLimiter, KillSwitch
+from .evidence import EvidenceStore
+from .safety import AuditLogger
 
 
 def ensure_directories() -> None:
@@ -30,7 +32,6 @@ def _ensure_not_killed() -> None:
 
 def command_discover(args: argparse.Namespace) -> None:
     from .discovery import DiscoveryAgent
-    from .evidence import EvidenceStore
 
     _ensure_not_killed()
     ensure_directories()
@@ -42,12 +43,14 @@ def command_discover(args: argparse.Namespace) -> None:
     rate_limiter = RateLimiter(max_rps=policy.max_rps)
     scope = ScopeEngine(policy, policy_token, keys)
     store = EvidenceStore(keys=keys)
+    audit = AuditLogger()
 
     agent = DiscoveryAgent(scope=scope, rate_limiter=rate_limiter, evidence_store=store)
     peg = agent.discover(base_url=args.base_url, max_depth=args.max_depth)
     peg_path = Path("artifacts") / "peg.json"
     with open(peg_path, "w", encoding="utf-8") as f:
         json.dump(peg.to_dict(), f, indent=2)
+    audit.log({"stage": "discover", "peg": str(peg_path)})
     print(f"Discovery complete. PEG saved to {peg_path}")
 
 
@@ -70,6 +73,7 @@ def command_infer(args: argparse.Namespace) -> None:
     schema_path = Path("artifacts") / "inferred_schema.json"
     with open(schema_path, "w", encoding="utf-8") as f:
         json.dump(schema, f, indent=2)
+    AuditLogger().log({"stage": "infer", "schema": str(schema_path)})
     print(f"Inference complete. Schema saved to {schema_path}")
 
 
@@ -99,6 +103,7 @@ def command_plan(args: argparse.Namespace) -> None:
     plan_path = Path("artifacts") / "plan.json"
     with open(plan_path, "w", encoding="utf-8") as f:
         json.dump(plan, f, indent=2)
+    AuditLogger().log({"stage": "plan", "plan": str(plan_path), "steps": len(plan.get("steps", []))})
     print(f"Plan created. Saved to {plan_path}")
 
 
@@ -107,7 +112,6 @@ def command_run(args: argparse.Namespace) -> None:
     from .inference import InferenceEngine
     from .planner import MetaPlanner
     from .verifier import Verifier
-    from .evidence import EvidenceStore
 
     _ensure_not_killed()
     ensure_directories()
@@ -119,30 +123,31 @@ def command_run(args: argparse.Namespace) -> None:
     rate_limiter = RateLimiter(max_rps=policy.max_rps)
     scope = ScopeEngine(policy, policy_token, keys)
     store = EvidenceStore(keys=keys)
+    audit = AuditLogger()
 
-    # 1) Discover
     agent = DiscoveryAgent(scope=scope, rate_limiter=rate_limiter, evidence_store=store)
     peg = agent.discover(base_url=args.base_url, max_depth=args.max_depth)
     with open(Path("artifacts") / "peg.json", "w", encoding="utf-8") as f:
         json.dump(peg.to_dict(), f, indent=2)
+    audit.log({"stage": "discover"})
 
-    # 2) Infer
     inference = InferenceEngine()
     schema = inference.infer(peg)
     with open(Path("artifacts") / "inferred_schema.json", "w", encoding="utf-8") as f:
         json.dump(schema, f, indent=2)
+    audit.log({"stage": "infer"})
 
-    # 3) Plan
     planner = MetaPlanner(scope=scope, verify_only=True)
     plan = planner.propose_plan(peg)
     with open(Path("artifacts") / "plan.json", "w", encoding="utf-8") as f:
         json.dump(plan, f, indent=2)
+    audit.log({"stage": "plan", "steps": len(plan.get("steps", []))})
 
-    # 4) Execute + Verify
     verifier = Verifier()
     result = verifier.execute_and_evaluate(plan)
     with open(Path("artifacts") / "evidence_card.json", "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
+    audit.log({"stage": "verify", "confidence": result.get("confidence_axes", {}).get("confidence_score", 0.0)})
     print("Run complete. Evidence card saved to artifacts/evidence_card.json")
 
 
@@ -155,7 +160,27 @@ def command_drift(args: argparse.Namespace) -> None:
     report = detector.compare(old_path, new_path, threshold=args.threshold)
     out = Path("artifacts") / "drift_report.json"
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    AuditLogger().log({"stage": "drift", "changes": report.get("count", 0)})
     print(f"Drift report saved to {out}")
+
+
+def command_semantic(args: argparse.Namespace) -> None:
+    from .discovery import PEG
+    from .semcluster import cluster_peg
+
+    peg_path = Path("artifacts") / "peg.json"
+    if not peg_path.exists():
+        print("PEG not found. Run discover first.")
+        sys.exit(1)
+    with open(peg_path, "r", encoding="utf-8") as f:
+        peg_dict = json.load(f)
+    peg = PEG.from_dict(peg_dict)
+
+    result = cluster_peg(peg, eps=args.eps, min_samples=args.min_samples)
+    out = Path("artifacts") / "semantic_clusters.json"
+    out.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    AuditLogger().log({"stage": "semantic", "clusters": len(result.get("clusters", []))})
+    print(f"Semantic clustering saved to {out}")
 
 
 def main(argv: Optional[list[str]] = None) -> None:
@@ -188,6 +213,11 @@ def main(argv: Optional[list[str]] = None) -> None:
     p_drift.add_argument("--new", required=True)
     p_drift.add_argument("--threshold", type=float, default=0.9)
     p_drift.set_defaults(func=command_drift)
+
+    p_sem = subparsers.add_parser("semantic", help="Cluster PEG semantically and infer param associations")
+    p_sem.add_argument("--eps", type=float, default=0.5)
+    p_sem.add_argument("--min-samples", type=int, default=2)
+    p_sem.set_defaults(func=command_semantic)
 
     args = parser.parse_args(argv)
     args.func(args)

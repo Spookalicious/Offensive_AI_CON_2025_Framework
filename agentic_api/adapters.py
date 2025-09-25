@@ -1,10 +1,27 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional
 
 import requests
+from pydantic import BaseModel, Field
+
+
+class AdapterContract(BaseModel):
+    name: str
+    version: str
+    capabilities: list[str] = Field(default_factory=lambda: ["verify-only", "differential"])
+
+
+class Step(BaseModel):
+    adapter: str
+    action: str
+    method: str = "GET"
+    url: str
+    expected_signal: str = "2xx_or_3xx"
+    cost: float = 1.0
+    risk: float = 0.1
+    rationale: Optional[str] = None
 
 
 @dataclass
@@ -19,7 +36,7 @@ class Adapter:
     name = "base"
 
     def handshake(self) -> Dict[str, Any]:
-        return {"name": self.name, "version": "0.1", "capabilities": ["verify-only", "differential"]}
+        return AdapterContract(name=self.name, version="0.1").model_dump()
 
     def run(self, step: Dict[str, Any]) -> AdapterResult:  # pragma: no cover - interface
         raise NotImplementedError
@@ -37,15 +54,14 @@ class HttpAdapter(Adapter):
     name = "http"
 
     def run(self, step: Dict[str, Any]) -> AdapterResult:
-        url = step["url"]
-        method = step.get("method", "GET").upper()
+        s = Step(**step)
         try:
-            if method == "HEAD":
-                resp = requests.head(url, timeout=5)
-            elif method == "POST":
-                resp = requests.post(url, json={"_": "synthetic"}, timeout=5)
+            if s.method.upper() == "HEAD":
+                resp = requests.head(s.url, timeout=5)
+            elif s.method.upper() == "POST":
+                resp = requests.post(s.url, json={"_": "synthetic"}, timeout=5)
             else:
-                resp = requests.get(url, timeout=5)
+                resp = requests.get(s.url, timeout=5)
             return AdapterResult(
                 ok=resp.ok,
                 status_code=resp.status_code,

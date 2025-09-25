@@ -4,6 +4,8 @@ import hashlib
 import json
 import queue
 import time
+import socket
+import ssl
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlparse
@@ -74,15 +76,36 @@ class DiscoveryAgent:
         self.store = evidence_store
 
     @staticmethod
-    def _fingerprint(resp: requests.Response, latency_ms: float) -> List[float]:
+    def _tls_features(url: str) -> List[float]:
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or not parsed.hostname:
+            return [0.0, 0.0, 0.0, 0.0, 0.0]
+        host = parsed.hostname
+        port = parsed.port or 443
+        try:
+            ctx = ssl.create_default_context()
+            with socket.create_connection((host, port), timeout=3) as sock:
+                with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+                    cipher = ssock.cipher()  # (name, proto, bits)
+                    version = ssock.version() or ""
+                    # Hash cipher name + version into a compact vector
+                    h = hashlib.sha256((cipher[0] + ":" + version).encode("utf-8")).digest()
+                    v0, v1, v2, v3 = [b / 255.0 for b in h[:4]]
+                    # encode TLS version as a small numeric
+                    vver = float(len(version)) / 10.0
+                    return [v0, v1, v2, v3, vver]
+        except Exception:
+            return [0.0, 0.0, 0.0, 0.0, 0.0]
+
+    def _fingerprint(self, resp: requests.Response, latency_ms: float) -> List[float]:
         headers = "|".join(sorted([f"{k}:{v}" for k, v in resp.headers.items() if k and v]))
         ct = resp.headers.get("Content-Type", "")
-        tls = 0.0
         size = float(len(resp.content) if resp.content is not None else 0)
         latency = float(latency_ms)
         h = hashlib.sha256((headers + ct).encode("utf-8")).digest()
         v0, v1, v2, v3 = [b / 255.0 for b in h[:4]]
-        return [v0, v1, v2, v3, size / 1e6, latency / 10.0, tls]
+        tls_vec = self._tls_features(resp.url)
+        return [v0, v1, v2, v3, size / 1e6, latency / 10.0] + tls_vec
 
     def _safe_request(self, method: str, url: str, parent: Optional[str]) -> Optional[EndpointSample]:
         parsed = urlparse(url)

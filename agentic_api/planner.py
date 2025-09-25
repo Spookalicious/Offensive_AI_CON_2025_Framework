@@ -32,6 +32,7 @@ class MetaPlanner:
                 "expected_signal": "2xx_or_3xx",
                 "cost": 1.0,
                 "risk": 0.1,
+                "rationale": "Read-only verification of liveness and content shape",
             })
 
         temperature = 1.0

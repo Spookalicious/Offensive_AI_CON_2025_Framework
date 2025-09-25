@@ -1,18 +1,18 @@
 # Offensive_AI_CON_2025_Framework
 
-This repository contains a complete, lab-safe reference implementation for the talk "The Machine That Hacks Back — agentic API reconnaissance & verification."
+This repository contains a lab-safe reference implementation for the talk "The Machine That Hacks Back — agentic API reconnaissance & verification."
 
 It implements an agentic pipeline that turns a blank URL into a reproducible, verifiable test case in an isolated lab:
 
-- Orchestration/Planner with cost-aware simulated annealing and self-play robustness hooks
-- Discovery agent with polite crawling, Probabilistic Endpoint Graph (PEG), and multi-modal fingerprinting
-- Contract inference engine using Bayesian posterior updates, active sampling, and semantic response clustering
-- MCP-style tooling adapters with sandboxing and differential-execution mode
+- Orchestration/Planner with cost-aware simulated annealing and explainable per-step rationales
+- Discovery agent with polite crawling, Probabilistic Endpoint Graph (PEG), and multi-modal fingerprinting (headers/size/latency/TLS)
+- Contract inference engine with posterior-like schema inference and active-sampling prioritization
+- MCP-style tooling adapters (typed contracts) with differential-execution mode
 - Verifier ensemble with counterfactual validation and multi-axis confidence taxonomy
-- Safety layer with a Policy DSL, capability tokens, rate limiting, immutable audit logs
+- Safety layer with a Policy DSL, capability tokens, rate limiting, kill switch, immutable audit logs
 - Evidence store with cryptographic provenance chains and redaction
-- Drift detector and adversarial emulator for pipeline safety testing
-- CLI for end-to-end runs and a lab Flask app for safe demos
+- Drift detector, semantic clustering, and adversarial emulator (WAF/5xx/latency)
+- CLI for end-to-end runs and a lab Flask app for demos
 
 Quick start (lab only)
 
@@ -23,39 +23,49 @@ Quick start (lab only)
 pip install -r requirements.txt
 ```
 
-3) Start the lab app in a separate terminal (safe, local-only by default):
+3) Start the lab app in a separate terminal:
 
 ```bash
 python -m lab_app.app
 ```
 
-4) Run discovery against the lab app and build a PEG:
+4) Discovery → PEG:
 
 ```bash
 python -m agentic_api.cli discover --base-url http://127.0.0.1:5000 --policy ./configs/policy.dsl
 ```
 
-5) Run contract inference from collected samples:
+5) Inference:
 
 ```bash
-python -m agentic_api.cli infer --base-url http://127.0.0.1:5000
+python -m agentic_api.cli infer
 ```
 
-6) Execute the meta-planner in verify-only mode with approval gates:
+6) Plan (verify-only):
 
 ```bash
 python -m agentic_api.cli plan --policy ./configs/policy.dsl --verify-only
 ```
 
-7) End-to-end pipeline (read-only by default):
+7) End-to-end (read-only):
 
 ```bash
 python -m agentic_api.cli run --base-url http://127.0.0.1:5000 --policy ./configs/policy.dsl
 ```
 
-Emulator and drift (lab)
+8) Semantic clustering:
 
-- Toggle emulator (WAF/5xx/latency):
+```bash
+python -m agentic_api.cli semantic --eps 0.5 --min-samples 2
+```
+
+9) Drift compare:
+
+```bash
+python -m agentic_api.cli drift --old artifacts/peg_old.json --new artifacts/peg.json --threshold 0.9
+```
+
+Emulator (lab)
 
 ```bash
 curl -X POST http://127.0.0.1:5000/admin/emulator \
@@ -63,43 +73,20 @@ curl -X POST http://127.0.0.1:5000/admin/emulator \
   -d '{"waf_block": true, "latency_ms": 200, "emulate_5xx": false}'
 ```
 
-- Introduce version drift:
-
-```bash
-curl -X POST http://127.0.0.1:5000/admin/drift -H "Content-Type: application/json" -d '{"version": 2}'
-```
-
-- Compare drift between two PEG snapshots:
-
-```bash
-python -m agentic_api.cli drift --old artifacts/peg_old.json --new artifacts/peg.json --threshold 0.9
-```
-
-Demo scripts (Windows PowerShell)
-
-- `scripts/run_lab.ps1` — simple end-to-end run
-- `scripts/demo_plan.ps1` — baseline, drift, compare, end-to-end
-
 Tests
 
 ```bash
 pytest -q
 ```
 
-Important safety notes
+Safety notes
 
-- Use this framework only in isolated labs or with explicit, written authorization.
-- The Policy DSL and safety layer enforce allowlists, rate limits, and approval gates.
-- Evidence is minimized/redacted and backed by immutable provenance hashes.
+- Use only in isolated labs or with explicit, written authorization.
+- Policy DSL enforces allowlists, rate limits, and approval gates.
+- Evidence is redacted and hashed; no raw payloads stored in central logs.
 
-Structure
+Artifacts
 
-- `requirements.txt` — Python dependencies
-- `src/agentic_api/` — framework modules
-- `configs/` — example policies and config
-- `lab_app/` — safe Flask app for demos
-- `scripts/` — helper scripts (Windows PowerShell)
-- `tests/` — minimal tests
-
-For detailed architecture, algorithms, and demo steps, see docstrings within modules and comments in `agentic_api/cli.py`.
-Framework to match Kurtis Shelton's talk at Offensive AI Con in San Diego 2025
+- `artifacts/peg.json`, `artifacts/inferred_schema.json`, `artifacts/plan.json`,
+  `artifacts/evidence_card.json`, `artifacts/semantic_clusters.json`, `artifacts/drift_report.json`,
+  `artifacts/audit/audit.jsonl`
