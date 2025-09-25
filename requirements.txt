@@ -1,0 +1,11 @@
+requests>=2.31.0
+beautifulsoup4>=4.12.2
+networkx>=3.2.1
+numpy>=1.26.0
+scikit-learn>=1.4.2
+flask>=3.0.0
+pydantic>=2.7.0
+cryptography>=42.0.5
+rich>=13.7.0
+uvicorn>=0.30.0
+pytest>=8.2.0
