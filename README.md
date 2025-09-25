@@ -24,11 +24,37 @@ python -m agentic_api.cli plan --policy ./configs/policy.dsl --verify-only
 python -m agentic_api.cli run --base-url http://127.0.0.1:5000 --policy ./configs/policy.dsl
 ```
 
+How it works (start → finish)
+
+- Provide a base URL and policy
+  - Run discover → infer → plan → run (or `run` to chain them)
+  - Policy enforces host/method allowlists, rate limits, and a kill switch
+- Discover live surface and build a PEG
+  - Polite HEAD/GET crawl collects status, headers, timing, size; computes fingerprints (headers/latency/size/TLS)
+  - Writes redacted evidence and `artifacts/peg.json`
+- Infer a coarse contract
+  - Estimate parameter types/requiredness; rank uncertain fields (active-sampling priority)
+  - Writes `artifacts/inferred_schema.json`
+- Plan safe verification steps
+  - Meta-planner optimizes (information gain − cost − risk) and attaches step rationales
+  - Writes `artifacts/plan.json`
+- Execute and verify
+  - Adapters run steps (HTTP; optional Nuclei/Burp); differential and counterfactual checks
+  - Ensemble evaluator produces confidence taxonomy; audit logger records stages
+  - Writes `artifacts/evidence_card.json`
+- Optional analysis
+  - Semantic clustering: `artifacts/semantic_clusters.json`
+  - Drift compare: `artifacts/drift_report.json`
+  - Mutations + fuzz-diff: `mutations.json`, `snapshot_*.json`, `fuzzdiff_report.json`
+- Optional lab demos
+  - Nuclei/Burp adapters produce `nuclei_result.json`, `burp_result.json`
+  - Chain demo (lab PoCs): `chain_evidence.json`
+
 Advanced commands
 
 ```bash
 # Semantic clustering over PEG
-a python -m agentic_api.cli semantic --eps 0.5 --min-samples 2
+python -m agentic_api.cli semantic --eps 0.5 --min-samples 2
 
 # Drift compare
 python -m agentic_api.cli drift --old artifacts/peg_old.json --new artifacts/peg.json --threshold 0.9
