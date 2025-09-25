@@ -6,6 +6,8 @@ import time
 app = Flask(__name__)
 
 STATE = {"version": 1, "emulate_5xx": False, "latency_ms": 0, "waf_block": False}
+USERS = {"1": {"id": 1, "name": "Alice", "role": "user", "discount": 0.1}, "2": {"id": 2, "name": "Bob", "role": "admin", "discount": 0.2}}
+TOKENS = {"valid-user": "1", "valid-admin": "2"}
 
 
 @app.get("/")
@@ -61,6 +63,43 @@ def emulator():
     STATE["latency_ms"] = int(body.get("latency_ms", 0))
     STATE["waf_block"] = bool(body.get("waf_block", False))
     return jsonify({"ok": True, **STATE})
+
+
+# PoC: auth bypass (cookie-only; missing server-side check)
+@app.get("/poc/admin")
+def poc_admin():
+    token = request.headers.get("X-Token", "")
+    uid = TOKENS.get(token)
+    if uid == "2":  # admin
+        return jsonify({"admin": True, "message": "Welcome"})
+    # flawed: treats presence of any X-Token as authenticated
+    if token:
+        return jsonify({"admin": False, "message": "Weak bypass"})
+    return jsonify({"error": "forbidden"}), 403
+
+
+# PoC: data leak (over-permissive field exposure via query)
+@app.get("/poc/user")
+def poc_user():
+    uid = request.args.get("id", "1")
+    include_internal = request.args.get("internal", "false").lower() == "true"
+    user = USERS.get(uid, USERS["1"]).copy()
+    if not include_internal:
+        user.pop("discount", None)
+    return jsonify(user)
+
+
+# PoC: logic flaw (discount miscalc)
+@app.get("/poc/checkout")
+def poc_checkout():
+    uid = request.args.get("id", "1")
+    price = float(request.args.get("price", "100"))
+    user = USERS.get(uid, USERS["1"])  # defaults to user
+    # flawed: doubles discount if a crafted flag is set
+    crafted = request.args.get("crafted", "false").lower() == "true"
+    discount = user["discount"] * (2 if crafted else 1)
+    total = max(0.0, price * (1 - discount))
+    return jsonify({"price": price, "discount": discount, "total": total})
 
 
 if __name__ == "__main__":

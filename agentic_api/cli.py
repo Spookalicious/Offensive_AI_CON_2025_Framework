@@ -2,7 +2,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 from .policy import Policy, PolicyToken, PolicyParser, KeyManager
 from .safety import ScopeEngine, RateLimiter, KillSwitch
@@ -183,6 +183,135 @@ def command_semantic(args: argparse.Namespace) -> None:
     print(f"Semantic clustering saved to {out}")
 
 
+def command_nuclei(args: argparse.Namespace) -> None:
+    from .adapters_nuclei import NucleiAdapter, NucleiConfig
+
+    adapter = NucleiAdapter(NucleiConfig())
+    hs = adapter.handshake()
+    print(json.dumps({"handshake": hs}, indent=2))
+    res = adapter.run({"url": args.url})
+    out = Path("artifacts") / "nuclei_result.json"
+    out.write_text(json.dumps(res, indent=2), encoding="utf-8")
+    AuditLogger().log({"stage": "nuclei", "count": res.get("summary", {}).get("count", 0)})
+    print(f"Nuclei result saved to {out}")
+
+
+def command_burp(args: argparse.Namespace) -> None:
+    from .adapters_burp import BurpAdapter, BurpConfig
+
+    adapter = BurpAdapter(BurpConfig())
+    hs = adapter.handshake()
+    print(json.dumps({"handshake": hs}, indent=2))
+    if args.action == "scan":
+        res = adapter.run({"action": "scan", "url": args.url})
+    else:
+        res = adapter.run({"action": "status", "scan_id": args.scan_id})
+    out = Path("artifacts") / "burp_result.json"
+    out.write_text(json.dumps(res, indent=2), encoding="utf-8")
+    AuditLogger().log({"stage": "burp", "ok": res.get("ok", False)})
+    print(f"Burp result saved to {out}")
+
+
+def command_mutate(args: argparse.Namespace) -> None:
+    from .discovery import PEG
+    from .inference import InferenceEngine
+    from .mutator import ParamMutator
+
+    peg_path = Path("artifacts") / "peg.json"
+    if not peg_path.exists():
+        print("PEG not found. Run discover first.")
+        sys.exit(1)
+    with open(peg_path, "r", encoding="utf-8") as f:
+        peg_dict = json.load(f)
+    peg = PEG.from_dict(peg_dict)
+
+    schema_path = Path("artifacts") / "inferred_schema.json"
+    if not schema_path.exists():
+        print("Schema not found. Run infer first.")
+        sys.exit(1)
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    hints: Dict[str, Dict[str, Any]] = {k: v for k, v in schema.get("fields", {}).items() if isinstance(v, dict)}
+
+    mut = ParamMutator()
+    urls: List[str] = list(peg.graph.nodes())
+    variants: Dict[str, List[str]] = {}
+    for u in urls[: args.limit]:
+        variants[u] = mut.mutate_url(u, hints)
+    out = Path("artifacts") / "mutations.json"
+    out.write_text(json.dumps({"variants": variants}, indent=2), encoding="utf-8")
+    AuditLogger().log({"stage": "mutate", "urls": len(urls[: args.limit])})
+    print(f"Mutations saved to {out}")
+
+
+def command_snapshot(args: argparse.Namespace) -> None:
+    from .discovery import PEG
+    from .adapters import HttpAdapter
+
+    peg_path = Path("artifacts") / "peg.json"
+    if not peg_path.exists():
+        print("PEG not found. Run discover first.")
+        sys.exit(1)
+    with open(peg_path, "r", encoding="utf-8") as f:
+        peg_dict = json.load(f)
+    peg = PEG.from_dict(peg_dict)
+
+    http = HttpAdapter()
+    endpoints: List[str] = list(peg.graph.nodes())[: args.limit]
+    results: List[Dict[str, Any]] = []
+    for url in endpoints:
+        parsed = http.parse(http.run({"adapter": "http", "action": "verify", "method": "GET", "url": url}))
+        results.append({"url": url, "result": parsed})
+    out = Path("artifacts") / args.output
+    out.write_text(json.dumps({"results": results}, indent=2), encoding="utf-8")
+    AuditLogger().log({"stage": "snapshot", "count": len(results)})
+    print(f"Snapshot saved to {out}")
+
+
+def command_fuzzdiff(args: argparse.Namespace) -> None:
+    from .fuzzdiff import reconcile
+
+    old = json.loads(Path(args.old).read_text(encoding="utf-8"))
+    new = json.loads(Path(args.new).read_text(encoding="utf-8"))
+
+    def to_maps(doc: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        return {e["url"]: e["result"] for e in doc.get("results", [])}
+
+    old_map = to_maps(old)
+    new_map = to_maps(new)
+    common = sorted(set(old_map.keys()) & set(new_map.keys()))
+    report = reconcile(common, [old_map[u] for u in common], [new_map[u] for u in common])
+    out = Path("artifacts") / "fuzzdiff_report.json"
+    out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    AuditLogger().log({"stage": "fuzzdiff", "working": report.get("working", 0), "total": report.get("total", 0)})
+    print(f"Fuzz-diff report saved to {out}")
+
+
+def command_chain(args: argparse.Namespace) -> None:
+    import requests
+
+    base = args.base_url.rstrip("/")
+    evidence: List[Dict[str, Any]] = []
+    # Step 1: admin without token (expected 403)
+    r1 = requests.get(f"{base}/poc/admin", timeout=5)
+    evidence.append({"step": "admin_no_token", "status": r1.status_code})
+    # Step 2: weak bypass with any token (expected 200)
+    r2 = requests.get(f"{base}/poc/admin", headers={"X-Token": "valid-user"}, timeout=5)
+    evidence.append({"step": "admin_weak_bypass", "status": r2.status_code})
+    # Step 3: data leak (keys count increases when internal=true)
+    r3a = requests.get(f"{base}/poc/user?id=1&internal=false", timeout=5).json()
+    r3b = requests.get(f"{base}/poc/user?id=1&internal=true", timeout=5).json()
+    evidence.append({"step": "user_leak_keys", "keys_no_internal": len(r3a.keys()), "keys_with_internal": len(r3b.keys())})
+    # Step 4: logic flaw (crafted flag doubles discount)
+    r4a = requests.get(f"{base}/poc/checkout?id=1&price=100&crafted=false", timeout=5).json()
+    r4b = requests.get(f"{base}/poc/checkout?id=1&price=100&crafted=true", timeout=5).json()
+    evidence.append({"step": "logic_flaw_total", "total_normal": r4a.get("total"), "total_crafted": r4b.get("total")})
+
+    out = Path("artifacts") / "chain_evidence.json"
+    out.write_text(json.dumps({"evidence": evidence}, indent=2), encoding="utf-8")
+    AuditLogger().log({"stage": "chain", "steps": len(evidence)})
+    print(f"Chain evidence saved to {out}")
+
+
 def main(argv: Optional[list[str]] = None) -> None:
     parser = argparse.ArgumentParser(description="Agentic API pipeline CLI (lab-safe)")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -218,6 +347,34 @@ def main(argv: Optional[list[str]] = None) -> None:
     p_sem.add_argument("--eps", type=float, default=0.5)
     p_sem.add_argument("--min-samples", type=int, default=2)
     p_sem.set_defaults(func=command_semantic)
+
+    p_nuclei = subparsers.add_parser("nuclei", help="Run nuclei against a single URL")
+    p_nuclei.add_argument("--url", required=True)
+    p_nuclei.set_defaults(func=command_nuclei)
+
+    p_burp = subparsers.add_parser("burp", help="Run burp action (scan/status)")
+    p_burp.add_argument("--action", choices=["scan", "status"], required=True)
+    p_burp.add_argument("--url", required=False)
+    p_burp.add_argument("--scan-id", required=False)
+    p_burp.set_defaults(func=command_burp)
+
+    p_mut = subparsers.add_parser("mutate", help="Generate benign parameter variants from inferred schema")
+    p_mut.add_argument("--limit", type=int, default=25)
+    p_mut.set_defaults(func=command_mutate)
+
+    p_snap = subparsers.add_parser("snapshot", help="Create a snapshot of endpoint results from PEG")
+    p_snap.add_argument("--limit", type=int, default=25)
+    p_snap.add_argument("--output", default="snapshot.json")
+    p_snap.set_defaults(func=command_snapshot)
+
+    p_fdiff = subparsers.add_parser("fuzzdiff", help="Reconcile two snapshots and summarize diffs")
+    p_fdiff.add_argument("--old", required=True)
+    p_fdiff.add_argument("--new", required=True)
+    p_fdiff.set_defaults(func=command_fuzzdiff)
+
+    p_chain = subparsers.add_parser("chain", help="Run a safe chain against lab PoC endpoints")
+    p_chain.add_argument("--base-url", required=True)
+    p_chain.set_defaults(func=command_chain)
 
     args = parser.parse_args(argv)
     args.func(args)
