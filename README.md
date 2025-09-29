@@ -26,7 +26,7 @@ python -m agentic_api.cli run --base-url http://127.0.0.1:5000 --policy ./config
 
 How it works (start → finish)
 
-- Provide a base URL and policy
+- Provide an endpoint and policy
   - Run discover → infer → plan → run (or `run` to chain them)
   - Policy enforces host/method allowlists, rate limits, and a kill switch
 - Discover live surface and build a PEG
